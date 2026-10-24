@@ -1,1 +1,16 @@
+# Secrets (the real file lives in my home folder, but just in case)
+.psql_secrets.env
 .env
+*.env
+
+# Database backups and logs (the backups hold my full watch history)
+backups/
+cinepipe-backup-*.sql
+sync_log.txt
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
