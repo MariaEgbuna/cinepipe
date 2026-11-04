@@ -3,8 +3,10 @@
 -- ║  Creates the three schemas that group the tables             ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  REGISTRY      series and movie details (the catalogue)      ║
--- ║  WATCHLOGS     my watch history for series and movies        ║
+-- ║  WATCHLOGS     the watch history for series and movies       ║
 -- ║  ARCHIVE       recycle bin for deleted records               ║
+-- ║  NOTE          dates_table and sync_state live in the        ║
+-- ║                default public schema.                        ║
 -- ╚══════════════════════════════════════════════════════════════╝
 CREATE SCHEMA registry;
 CREATE SCHEMA archive;
@@ -18,8 +20,7 @@ CREATE SCHEMA watchlogs;
 -- ║                name, short day name, day of week number,     ║
 -- ║                weekend flag                                  ║
 -- ║  ONE ROW PER   calendar day                                  ║
--- ║  USED BY       series_log and movie_log (start and end       ║
--- ║                dates)                                        ║
+-- ║  USED BY       series_log and movie_log (start and end dates)║
 -- ║  RULES         Year must be 2025 or later. Logs can only use ║
 -- ║                dates that exist in this table.               ║
 -- ║  NOTE          Add new years with CALL                       ║
@@ -38,7 +39,7 @@ CREATE TABLE public.dates_table (
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  registry.series_metadata                                    ║
--- ║  Details of every series you track (the catalogue)           ║
+-- ║  Details of every series I track (the catalogue)             ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  STORES        title, country, years, seasons and episodes,  ║
 -- ║                average episode length, genres, platform,     ║
@@ -47,8 +48,8 @@ CREATE TABLE public.dates_table (
 -- ║  KEYS          series_code and tmdb_id must each be unique   ║
 -- ║  RULES         Status is Returning, Ended, Cancelled or TBD. ║
 -- ║                Log status is Backlog or Logged.              ║
--- ║  NOTE          seasons_pre_log counts seasons you watched    ║
--- ║                before you started logging.                   ║
+-- ║  NOTE          seasons_pre_log counts seasons I watched      ║
+-- ║                before I started logging.                     ║
 -- ║  TRIGGERS      fn_process_metadata makes the series_code and ║
 -- ║                tidies title, genres and platform. Log status ║
 -- ║                and latest_log_id are kept up to date         ║
@@ -75,17 +76,25 @@ CREATE TABLE registry.series_metadata (
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  registry.movie_metadata                                     ║
--- ║  Details of every movie you track (the catalogue)            ║
+-- ║  Details of every movie I track (the catalogue)              ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  STORES        title, year, country, director, runtime,      ║
--- ║                genres                                        ║
+-- ║                genres, and whether I watched it before       ║
+-- ║                I started logging                             ║
 -- ║  ONE ROW PER   movie                                         ║
 -- ║  KEYS          movie_code and tmdb_id must each be unique    ║
 -- ║  RULES         Log status is Backlog or Logged.              ║
+-- ║  NOTE          watched_pre_log marks a movie I watched       ║
+-- ║                before I started logging. I set it by         ║
+-- ║                hand, and it defaults to false. When it is    ║
+-- ║                true, the first log of that movie is set as   ║
+-- ║                a rewatch automatically.                      ║
 -- ║  TRIGGERS      fn_process_metadata makes the movie_code and  ║
 -- ║                tidies title, genres, director and country.   ║
--- ║                Log status and latest_log_id are kept up to   ║
--- ║                date automatically.                           ║
+-- ║                fn_process_log_entry reads watched_pre_log    ║
+-- ║                to decide the rewatch flag. Log status and    ║
+-- ║                latest_log_id are kept up to date             ║
+-- ║                automatically.                                ║
 -- ╚══════════════════════════════════════════════════════════════╝
 CREATE TABLE registry.movie_metadata ( 
     movie_id SERIAL PRIMARY KEY,
@@ -98,12 +107,13 @@ CREATE TABLE registry.movie_metadata (
     genres TEXT[],
     tmdb_id INTEGER UNIQUE NOT NULL,
     log_status VARCHAR(20) NOT NULL DEFAULT 'Backlog' CHECK (log_status IN ('Backlog', 'Logged')),
+    watched_pre_log BOOLEAN NOT NULL DEFAULT FALSE,
     last_updated TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  watchlogs.series_log                                        ║
--- ║  The watch history for series, one full season at a time     ║
+-- ║  the watch history for series, one full season at a time     ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  STORES        season number, episode counts, dates, watch   ║
 -- ║                type, status, device, rating, review          ║
@@ -146,7 +156,7 @@ CREATE TABLE watchlogs.series_log (
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  watchlogs.movie_log                                         ║
--- ║  The watch history for movies                                ║
+-- ║  the watch history for movies                                ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  STORES        dates, watch status, pace, device, rating,    ║
 -- ║                review                                        ║
@@ -183,26 +193,6 @@ CREATE TABLE watchlogs.movie_log (
     CONSTRAINT chk_rating_only_if_finished CHECK ((watch_status = 'Finished' AND rating IS NOT NULL) OR (rating IS NULL)),
     CONSTRAINT chk_movie_finish_date CHECK (end_date IS NULL OR end_date >= start_date)
 );
-
--- ╔══════════════════════════════════════════════════════════════╗
--- ║  Latest log links                                            ║
--- ║  Adds a latest_log_id column to series_metadata and          ║
--- ║  movie_metadata                                              ║
--- ╠══════════════════════════════════════════════════════════════╣
--- ║  STORES        the log_id of the newest log for that series  ║
--- ║                or movie                                      ║
--- ║  RULES         If that log is deleted, the link is cleared.  ║
--- ║                The series or movie stays.                    ║
--- ║  NOTE          Added with ALTER because the log tables are   ║
--- ║                created after the catalogue tables.           ║
--- ╚══════════════════════════════════════════════════════════════╝
--- Movie Metadata
-ALTER TABLE registry.movie_metadata
-ADD COLUMN latest_log_id INTEGER REFERENCES watchlogs.movie_log(log_id) ON DELETE SET NULL;
-
--- Series Metadata
-ALTER TABLE registry.series_metadata
-ADD COLUMN latest_log_id INTEGER REFERENCES watchlogs.series_log(log_id) ON DELETE SET NULL;
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  archive.metadata_audit                                      ║
@@ -290,3 +280,27 @@ CREATE INDEX idx_metadata_audit_lookup ON archive.metadata_audit(content_type, e
 
 CREATE INDEX idx_log_audit_log_id ON archive.log_audit(log_id);
 CREATE INDEX idx_log_audit_lookup ON archive.log_audit(content_type, entity_id);
+
+
+-- ╔══════════════════════════════════════════════════════════════╗
+-- ║  Reset ID sequences                                          ║
+-- ║  Run these after importing data                              ║
+-- ╠══════════════════════════════════════════════════════════════╣
+-- ║  WHY           An import can bring its own ids, and the      ║
+-- ║                counters that hand out new ids do not know    ║
+-- ║                about them. The next new row could then get   ║
+-- ║                an id that is already taken.                  ║
+-- ║  WHAT IT DOES  moves each counter up to the highest id in    ║
+-- ║                its table                                     ║
+-- ║  TABLES        movie_metadata, series_metadata, series_log,  ║
+-- ║                movie_log                                     ║
+-- ╚══════════════════════════════════════════════════════════════╝
+
+-- For Metadata Tables
+SELECT setval(pg_get_serial_sequence('registry.movie_metadata', 'movie_id'), (SELECT MAX(movie_id) FROM registry.movie_metadata));
+SELECT setval(pg_get_serial_sequence('registry.series_metadata', 'series_id'), (SELECT MAX(series_id) FROM registry.series_metadata));
+
+-- For Log Tables
+SELECT setval(pg_get_serial_sequence('watchlogs.series_log', 'log_id'), (SELECT MAX(log_id) FROM watchlogs.series_log));
+SELECT setval(pg_get_serial_sequence('watchlogs.movie_log', 'log_id'), (SELECT MAX(log_id) FROM watchlogs.movie_log));
+
