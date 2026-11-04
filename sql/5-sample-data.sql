@@ -74,29 +74,29 @@ CALL registry.add_metadata('Series', 'Severance', 2022, 'US', 'Apple TV+', 50,
 -- ------------------------------------------------------------
 -- 3. MOVIE CATALOGUE
 -- add_metadata(type, title, year, country, director, runtime,
---              genres, tmdb id)
+--              genres, tmdb id, watched_pre_log)
 -- ------------------------------------------------------------
 CALL registry.add_metadata('Movie', 'Inception', 2010, 'US', 'Christopher Nolan', 148,
-     ARRAY['Action', 'Science Fiction', 'Adventure'], 27205);
+     ARRAY['Action', 'Science Fiction', 'Adventure'], 27205, false);
 
 CALL registry.add_metadata('Movie', 'Inglourious Basterds', 2009, 'US', 'Quentin Tarantino', 153,
-     ARRAY['Drama', 'Thriller', 'War'], 16869);
+     ARRAY['Drama', 'Thriller', 'War'], 16869, false);
 
 CALL registry.add_metadata('Movie', 'Jurassic Park', 1993, 'US', 'Steven Spielberg', 127,
-     ARRAY['Adventure', 'Science Fiction'], 329);
+     ARRAY['Adventure', 'Science Fiction'], 329, true);
 
 CALL registry.add_metadata('Movie', 'Parasite', 2019, 'KR', 'Bong Joon Ho', 133,
-     ARRAY['Comedy', 'Thriller', 'Drama'], 496243);
+     ARRAY['Comedy', 'Thriller', 'Drama'], 496243), true;
 
 CALL registry.add_metadata('Movie', 'Morbius', 2022, 'US', 'Daniel Espinosa', 104,
-     ARRAY['Action', 'Fantasy', 'Science Fiction'], 526896);
+     ARRAY['Action', 'Fantasy', 'Science Fiction'], 526896, false);
 
 CALL registry.add_metadata('Movie', 'Dune', 2021, 'US', 'Denis Villeneuve', 155,
-     ARRAY['Science Fiction', 'Adventure'], 438631);
+     ARRAY['Science Fiction', 'Adventure'], 438631, false);
 
 -- Never logged, so it stays in the backlog
 CALL registry.add_metadata('Movie', 'Everything Everywhere All at Once', 2022, 'US', 'Daniel Kwan', 139,
-     ARRAY['Action', 'Adventure', 'Science Fiction'], 545611);
+     ARRAY['Action', 'Adventure', 'Science Fiction'], 545611, false);
 
 
 -- ------------------------------------------------------------
@@ -167,10 +167,10 @@ CALL watchlogs.movie_watch('ING-09', 8.5, 'Great opening scene.',
      'Finished', FALSE, 'Both', '2025-01-25', '2025-01-26');
 
 CALL watchlogs.movie_watch('JUR-93', 8.0, 'A classic.',
-     'Finished', FALSE, 'Laptop', '2025-02-02', '2025-02-07');
+     'Finished', TRUE, 'Laptop', '2025-02-02', '2025-02-07');
 
 CALL watchlogs.movie_watch('PAR-19', 9.5, 'Every scene matters.',
-     'Finished', FALSE, 'Phone', '2025-03-08', '2025-03-08');
+     'Finished', TRUE, 'Phone', '2025-03-08', '2025-03-08');
 
 -- Dropped: no rating, pace becomes Stalled
 CALL watchlogs.movie_watch('MOR-22', NULL, 'Switched it off early.',
