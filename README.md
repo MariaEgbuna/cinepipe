@@ -10,7 +10,7 @@ Want the full detail? The [complete documentation](docs/database-documentation.m
 
 ## How It's Wired
 
-![CinePipe ER Diagram](images/e-r-diagram.png)
+![CinePipe ER Diagram](images/cinepipe.png)
 
 | Table | What it stores |
 |---|---|
