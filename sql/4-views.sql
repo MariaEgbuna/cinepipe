@@ -1,6 +1,62 @@
 -- ╔══════════════════════════════════════════════════════════════╗
+-- ║  watchlogs.v_genre_ratings                                   ║
+-- ║  Average rating for each genre, with movies and series kept  ║
+-- ║  apart                                                       ║
+-- ╠══════════════════════════════════════════════════════════════╣
+-- ║  READS FROM    movie_log, movie_metadata, series_log,        ║
+-- ║                series_metadata                               ║
+-- ║  ONE ROW PER   media type and genre                          ║
+-- ║  SHOWS         number rated, average, lowest and highest     ║
+-- ║                rating                                        ║
+-- ║  NOTE          First watches only, rewatches are left out.   ║
+-- ║                One exception: a movie with watched_pre_log   ║
+-- ║                set still counts its first logged watch.      ║
+-- ║                Each rated season of a series counts as one   ║
+-- ║                rating.                                       ║
+-- ╚══════════════════════════════════════════════════════════════╝
+CREATE OR REPLACE VIEW watchlogs.v_genre_ratings AS
+WITH combined AS (
+    SELECT
+        UNNEST(mm.genres) AS genre,
+        ml.rating,
+        'Movie'::TEXT AS media_type
+    FROM watchlogs.movie_log ml
+    INNER JOIN registry.movie_metadata mm ON ml.movie_id = mm.movie_id
+    WHERE ml.rating IS NOT NULL
+        AND (
+            ml.is_rewatch = FALSE
+            -- A movie watched before logging started: its first logged watch still counts
+            OR (mm.watched_pre_log
+                AND ml.log_id = (
+                    SELECT MIN(f.log_id) FROM watchlogs.movie_log f WHERE f.movie_id = ml.movie_id
+                ))
+        )
+    UNION ALL
+    SELECT
+        UNNEST(sm.genres) AS genre,
+        sl.rating,
+        'Series'::TEXT AS media_type
+    FROM watchlogs.series_log sl
+    INNER JOIN registry.series_metadata sm ON sl.series_id = sm.series_id
+    WHERE sl.rating IS NOT NULL
+        AND sl.is_rewatch = FALSE
+)
+SELECT
+    media_type,
+    genre,
+    COUNT(*) AS total_rated,
+    ROUND(AVG(rating)::NUMERIC, 2) AS avg_rating,
+    MIN(rating) AS lowest,
+    MAX(rating) AS highest
+FROM combined
+GROUP BY media_type, genre
+ORDER BY media_type, avg_rating DESC;
+
+COMMENT ON VIEW watchlogs.v_genre_ratings IS 'Average rating for each genre, with movies and series kept apart';
+
+-- ╔══════════════════════════════════════════════════════════════╗
 -- ║  watchlogs.v_binge_patterns                                  ║
--- ║  Which days of the week you start my binges                  ║
+-- ║  Which days of the week I start my binges                    ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  READS FROM    series_log, series_metadata, dates_table      ║
 -- ║  ONE ROW PER   day of the week                               ║
@@ -34,11 +90,11 @@ FROM session_metrics
 GROUP BY day_short, day_of_week_index
 ORDER BY day_of_week_index;
 
-COMMENT ON VIEW watchlogs.v_binge_patterns IS 'Which days of the week you start my binges';
+COMMENT ON VIEW watchlogs.v_binge_patterns IS 'Which days of the week you start your binges';
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  watchlogs.v_rewatch_rating_changes                          ║
--- ║  How the rating changed with each movie rewatch              ║
+-- ║  How your rating changed with each movie rewatch             ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  READS FROM    movie_log, movie_metadata                     ║
 -- ║  ONE ROW PER   movie rewatch (rated or dropped)              ║
@@ -48,7 +104,7 @@ COMMENT ON VIEW watchlogs.v_binge_patterns IS 'Which days of the week you start 
 -- ║                number                                        ║
 -- ║  OLD WATCH     Names the log the old rating came from:       ║
 -- ║                Original Watch, Rewatch 1, Rewatch 2 and so   ║
--- ║                on, or Original (Not Logged) if there is no   ║
+-- ║                on, or Not Logged if there is no              ║
 -- ║                earlier rated log.                            ║
 -- ║  NOTE          Dropped rewatches show up with no new rating  ║
 -- ║                and a verdict of "Dropped".                   ║
@@ -110,11 +166,11 @@ WHERE r.is_kept
 -- Default sort: title A to Z, then year (remakes), then rewatch order
 ORDER BY mm.title, mm.year_released, r.rewatch_no;
 
-COMMENT ON VIEW watchlogs.v_rewatch_rating_changes IS 'How the rating changed with each movie rewatch, including dropped rewatches';
+COMMENT ON VIEW watchlogs.v_rewatch_rating_changes IS 'How your rating changed with each movie rewatch, including dropped rewatches';
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  watchlogs.v_season_rating_changes                           ║
--- ║  How the rating changed with each rewatch of a season        ║
+-- ║  How your rating changed with each rewatch of a season       ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  READS FROM    series_log, series_metadata                   ║
 -- ║  ONE ROW PER   season rewatch (rated or dropped)             ║
@@ -131,36 +187,34 @@ COMMENT ON VIEW watchlogs.v_rewatch_rating_changes IS 'How the rating changed wi
 -- ║                rewatches show up with no new rating and a    ║
 -- ║                verdict of "Dropped".                         ║
 -- ╚══════════════════════════════════════════════════════════════╝
-CREATE OR REPLACE VIEW watchlogs.v_season_rating_changes AS
+CREATE OR REPLACE VIEW watchlogs.v_rewatch_rating_changes AS
 WITH numbered AS (
     SELECT
-        series_id,
-        season_no,
+        movie_id,
         log_id,
         rating,
         is_rewatch,
         -- Is this a rewatch that should appear in the view? (rated or dropped)
-        (is_rewatch AND (rating IS NOT NULL OR watch_status = 'Dropped')) AS is_kept,
-        -- Running count of kept rewatches for this season, in log order.
+        (is_rewatch IS TRUE AND (rating IS NOT NULL OR watch_status = 'Dropped')) AS is_kept,
+        -- Running count of kept rewatches for this movie, in log order.
         -- The original watch gets 0, the first kept rewatch gets 1, and so on.
         COUNT(*) FILTER (
-            WHERE is_rewatch AND (rating IS NOT NULL OR watch_status = 'Dropped')
-        ) OVER (PARTITION BY series_id, season_no ORDER BY log_id) AS rewatch_no
-    FROM watchlogs.series_log
+            WHERE is_rewatch IS TRUE AND (rating IS NOT NULL OR watch_status = 'Dropped')
+        ) OVER (PARTITION BY movie_id ORDER BY log_id) AS rewatch_no
+    FROM watchlogs.movie_log
 )
 SELECT
-    sm.series_code,
-    sm.title,
-    r.season_no,
+    mm.movie_code,
+    mm.title,
+    mm.year_released,
     r.rewatch_no,
     CASE
-        -- No earlier rated log: was the season watched before logging began?
-        WHEN prev.log_id IS NULL AND r.season_no <= COALESCE(sm.seasons_pre_log, 0) THEN 'Original (Not Logged)'
-        WHEN prev.log_id IS NULL THEN 'None'
+        -- No earlier rated log at all
+        WHEN prev.log_id IS NULL THEN 'Not Logged'
         -- The old rating came from an earlier rewatch: name it by its number
-        WHEN prev.is_rewatch THEN 'Rewatch ' || prev.rewatch_no
+        WHEN prev.is_rewatch IS TRUE THEN 'Rewatch ' || prev.rewatch_no
         -- Otherwise it came from the original watch
-        ELSE 'Original Watch'
+        ELSE 'First Watch'
     END AS old_watch,
     prev.rating AS old_rating,
     r.rating AS new_rating,
@@ -168,20 +222,18 @@ SELECT
     CASE
         -- A kept rewatch with no rating can only be a dropped one
         WHEN r.rating IS NULL THEN 'Dropped'
-        WHEN prev.rating IS NULL AND r.season_no <= COALESCE(sm.seasons_pre_log, 0) THEN 'No Rating To Compare'
-        WHEN prev.rating IS NULL THEN 'No Earlier Log'
+        WHEN prev.rating IS NULL THEN 'No Rating To Compare'
         WHEN r.rating > prev.rating THEN 'Went Up'
         WHEN r.rating < prev.rating THEN 'Went Down'
         ELSE 'No Change'
     END AS verdict
 FROM numbered r
-INNER JOIN registry.series_metadata sm ON sm.series_id = r.series_id
--- For each row, find the most recent earlier log of the same season that has a rating
+INNER JOIN registry.movie_metadata mm ON mm.movie_id = r.movie_id
+-- For each row, find the most recent earlier log of the same movie that has a rating
 LEFT JOIN LATERAL (
     SELECT p.log_id, p.rating, p.is_rewatch, p.rewatch_no
     FROM numbered p
-    WHERE p.series_id = r.series_id
-      AND p.season_no = r.season_no
+    WHERE p.movie_id = r.movie_id
       AND p.log_id < r.log_id
       AND p.rating IS NOT NULL
     ORDER BY p.log_id DESC
@@ -189,10 +241,10 @@ LEFT JOIN LATERAL (
 ) prev ON TRUE
 -- Show only the kept rewatches (the original watches were only needed for lookback)
 WHERE r.is_kept
--- Default sort: title A to Z, then season, then rewatch order
-ORDER BY sm.title, r.season_no, r.rewatch_no;
+-- Default sort: title A to Z, then year (remakes), then rewatch order
+ORDER BY mm.title, mm.year_released, r.rewatch_no;
 
-COMMENT ON VIEW watchlogs.v_season_rating_changes IS 'How my rating changed with each rewatch of a season, including dropped rewatches';
+COMMENT ON VIEW watchlogs.v_season_rating_changes IS 'How your rating changed with each rewatch of a season, including dropped rewatches';
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  watchlogs.v_series_rating_changes                           ║
@@ -204,8 +256,8 @@ COMMENT ON VIEW watchlogs.v_season_rating_changes IS 'How my rating changed with
 -- ║                verdict                                       ║
 -- ║  SORTED BY     title                                         ║
 -- ║  NOTE          Create v_season_rating_changes first. For each║
--- ║                season it compares the rating before my       ║
--- ║                first rated rewatch with my latest rated      ║
+-- ║                season it compares the rating before your     ║
+-- ║                first rated rewatch with your latest rated    ║
 -- ║                rewatch. Dropped rewatches are ignored. A     ║
 -- ║                season is skipped unless it has two real      ║
 -- ║                ratings to compare.                           ║
@@ -217,7 +269,8 @@ WITH rated AS (
         series_code,
         title,
         season_no,
-        rewatch_no,
+        -- Pull the number back out of the "Rewatch 3" text, so we can sort by a real number
+        SUBSTRING(rewatch FROM '[0-9]+')::INT AS rewatch_no,
         old_rating,
         new_rating
     FROM watchlogs.v_season_rating_changes
@@ -267,7 +320,6 @@ SELECT
         ELSE 'No Change'
     END AS verdict
 FROM averages
--- Default sort: title A to Z
 ORDER BY title;
 
 COMMENT ON VIEW watchlogs.v_series_rating_changes IS 'Did you like a series more or less after rewatching it?';
@@ -345,7 +397,7 @@ COMMENT ON VIEW watchlogs.v_movie_watchlist IS 'Movies you are watching right no
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  registry.v_movie_status                                     ║
--- ║  Where every movie stands in my watch progress               ║
+-- ║  Where every movie stands in your watch progress             ║
 -- ╠══════════════════════════════════════════════════════════════╣
 -- ║  READS FROM    movie_metadata, movie_log                     ║
 -- ║  ONE ROW PER   movie                                         ║
@@ -367,7 +419,7 @@ LEFT JOIN watchlogs.movie_log ml ON mm.movie_id = ml.movie_id
 GROUP BY mm.movie_id, movie_code, title, runtime_mins, log_status
 ORDER BY mm.title;
 
-COMMENT ON VIEW registry.v_movie_status IS 'Where every movie stands in my watch progress';
+COMMENT ON VIEW registry.v_movie_status IS 'Where every movie stands in your watch progress';
 
 -- ╔══════════════════════════════════════════════════════════════╗
 -- ║  registry.v_series_status                                    ║
@@ -424,6 +476,55 @@ ORDER BY title;
 COMMENT ON VIEW registry.v_series_status IS 'Where every series stands, from Not Started to Finished';
 
 -- ╔══════════════════════════════════════════════════════════════╗
+-- ║  watchlogs.v_legacy_lifetime_wrapped                         ║
+-- ║  Lifetime totals for movies and series side by side          ║
+-- ╠══════════════════════════════════════════════════════════════╣
+-- ║  READS FROM    movie_log, movie_metadata, series_log,        ║
+-- ║                series_metadata                               ║
+-- ║  ONE ROW PER   media type (Movies or Series)                 ║
+-- ║  SHOWS         unique titles, total logs, rewatches, hours   ║
+-- ║                watched, share of total time                  ║
+-- ║  NOTE          Hours count Finished logs only. Series hours  ║
+-- ║                are episodes times average episode length.    ║
+-- ╚══════════════════════════════════════════════════════════════╝
+CREATE OR REPLACE VIEW watchlogs.v_legacy_lifetime_wrapped AS
+WITH combined AS (
+    SELECT 
+        'Series'::TEXT AS media_type,
+        COUNT(sl.log_id) AS total_logged,
+        COUNT(DISTINCT sl.series_id) AS unique_watch,
+        SUM(sl.is_rewatch::INTEGER) AS rewatches,
+        SUM(CASE 
+            WHEN sl.watch_status = 'Finished' THEN (sl.total_episodes * sm.avg_runtime)
+            ELSE 0 
+        END) AS total_mins
+    FROM watchlogs.series_log sl
+    INNER JOIN registry.series_metadata sm ON sl.series_id = sm.series_id
+    UNION ALL
+    SELECT 
+        'Movies'::TEXT AS media_type,
+        COUNT(ml.log_id) AS total_logged,
+        COUNT(DISTINCT ml.movie_id) AS unique_watch,
+        SUM(ml.is_rewatch::INTEGER) AS rewatches,
+        SUM(CASE 
+            WHEN ml.watch_status = 'Finished' THEN mm.runtime_mins 
+            ELSE 0 
+        END) AS total_mins
+    FROM watchlogs.movie_log ml
+    INNER JOIN registry.movie_metadata mm ON ml.movie_id = mm.movie_id
+)
+SELECT 
+    media_type,
+    unique_watch,
+    total_logged,
+    rewatches,
+    ROUND((total_mins::NUMERIC / 60.0), 1) AS hours,
+    ROUND((total_mins::NUMERIC * 100.0) / NULLIF(SUM(total_mins) OVER (), 0), 1) AS time_share_pct
+FROM combined;
+
+COMMENT ON VIEW watchlogs.v_legacy_lifetime_wrapped IS 'Lifetime totals for movies and series side by side';
+
+-- ╔══════════════════════════════════════════════════════════════╗
 -- ║  registry.v_admin_toolbox                                    ║
 -- ║  A menu of ready-to-copy admin queries                       ║
 -- ╠══════════════════════════════════════════════════════════════╣
@@ -443,7 +544,7 @@ UNION ALL
 SELECT
     'Recovery',
     'Movie Metadata Restore',
-    'INSERT INTO registry.movie_metadata SELECT * FROM jsonb_populate_record(NULL::registry.movie_metadata, (SELECT original_data || jsonb_build_object(''latest_log_id'', NULL) FROM archive.metadata_audit WHERE entity_id = [ID] AND content_type = ''movie'' LIMIT 1));'
+    'INSERT INTO registry.movie_metadata SELECT * FROM jsonb_populate_record(NULL::registry.movie_metadata, (SELECT jsonb_build_object(''watched_pre_log'', FALSE) || original_data || jsonb_build_object(''latest_log_id'', NULL) FROM archive.metadata_audit WHERE entity_id = [ID] AND content_type = ''movie'' LIMIT 1));'
 UNION ALL
 SELECT
     'Recovery',
