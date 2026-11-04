@@ -6,9 +6,11 @@
 -- ║                tmdb_id. Optional: country (default US),      ║
 -- ║                extra info, runtime, genres. Series also take ║
 -- ║                status, year completed, seasons, episodes and ║
--- ║                seasons watched before logging.               ║
--- ║  EXTRA INFO    the **platform** for a series, or the         ║
--- ║                **director** for a movie                      ║
+-- ║                seasons watched before logging. Movies also   ║
+-- ║                take a flag for watched before logging        ║
+-- ║                (default false).                              ║
+-- ║  EXTRA_INFO    the platform for a series, or the director    ║
+-- ║                for a movie                                   ║
 -- ║  HOW IT WORKS  Checks the type and that tmdb_id is given.    ║
 -- ║                Looks for the same tmdb_id in that library.   ║
 -- ║                If it is already there, it prints a notice    ║
@@ -19,7 +21,8 @@
 -- ║  NOTE          Type is not case sensitive. A series status   ║
 -- ║                defaults to Returning. The movie or series    ║
 -- ║                code is made by the trigger                   ║
--- ║                fn_process_metadata.                          ║
+-- ║                fn_process_metadata. A movie with the flag    ║
+-- ║                set has its first log marked as a rewatch.    ║
 -- ╚══════════════════════════════════════════════════════════════╝
 CREATE OR REPLACE PROCEDURE registry.add_metadata(
     p_type           TEXT, 
@@ -34,7 +37,8 @@ CREATE OR REPLACE PROCEDURE registry.add_metadata(
     p_completed      INTEGER DEFAULT NULL, 
     p_seasons        INTEGER DEFAULT NULL, 
     p_episodes       INTEGER DEFAULT NULL, 
-    p_seasons_pre_log INTEGER DEFAULT 0
+    p_seasons_pre_log INTEGER DEFAULT 0,
+    p_watched_pre_log BOOLEAN DEFAULT FALSE
 )
 LANGUAGE plpgsql
 AS $procedure$
@@ -73,11 +77,12 @@ BEGIN
     ELSE
         INSERT INTO registry.movie_metadata (
             title, year_released, country, director, 
-            runtime_mins, genres, tmdb_id
+            runtime_mins, genres, tmdb_id, watched_pre_log
         )
         VALUES (
             p_title, p_year::SMALLINT, p_country, p_extra_info, 
-			p_runtime::SMALLINT,  p_genres, p_tmdb_id
+			p_runtime::SMALLINT,  p_genres, p_tmdb_id,
+			COALESCE(p_watched_pre_log, FALSE)
         );
     END IF;
 
@@ -189,7 +194,9 @@ $procedure$;
 -- ║                with the same rewatch flag that is not        ║
 -- ║                Finished, or that has the same start date. If ║
 -- ║                one is found, it is updated. If not, a new    ║
--- ║                log is added.                                 ║
+-- ║                log is added. If watched_pre_log is set, the  ║
+-- ║                rewatch flag is treated as true, so I         ║
+-- ║                never need to pass it for that movie.         ║
 -- ║  STOPS WHEN    the movie code is not found                   ║
 -- ║  NOTE          If several logs match, the one with the       ║
 -- ║                newest start date is used. An update never    ║
@@ -212,10 +219,12 @@ CREATE OR REPLACE PROCEDURE watchlogs.movie_watch(
 LANGUAGE plpgsql
 AS $procedure$
 DECLARE
-    v_movie_id INTEGER;
-    v_log_id   INTEGER;
+    v_movie_id   INTEGER;
+    v_log_id     INTEGER;
+    v_pre_log    BOOLEAN;
+    v_is_rewatch BOOLEAN;
 BEGIN
-    SELECT movie_id INTO v_movie_id 
+    SELECT movie_id, watched_pre_log INTO v_movie_id, v_pre_log 
       FROM registry.movie_metadata 
      WHERE movie_code = p_movie_code;
 
@@ -223,10 +232,14 @@ BEGIN
         RAISE EXCEPTION 'Movie code "%" not found.', p_movie_code;
     END IF;
 
+    -- A movie watched before logging started is always a rewatch,
+    -- so look it up (and log it) that way even if the flag was not passed.
+    v_is_rewatch := p_is_rewatch OR v_pre_log;
+
     SELECT log_id INTO v_log_id
       FROM watchlogs.movie_log
      WHERE movie_id   = v_movie_id
-       AND is_rewatch = p_is_rewatch
+       AND is_rewatch = v_is_rewatch
        AND (start_date = p_start_date OR watch_status != 'Finished')
      ORDER BY start_date DESC
      LIMIT 1;
@@ -248,7 +261,7 @@ BEGIN
         )
         VALUES (
             v_movie_id, p_start_date, p_end_date, p_rating, 
-            p_review, p_is_rewatch, p_watch_status, p_device
+            p_review, v_is_rewatch, p_watch_status, p_device
         );
         
         RAISE NOTICE 'Recorded new watchlog for movie code: %', p_movie_code;
