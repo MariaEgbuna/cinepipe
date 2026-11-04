@@ -193,6 +193,26 @@ AFTER INSERT OR UPDATE OR DELETE ON watchlogs.series_log
 FOR EACH ROW EXECUTE FUNCTION watchlogs.fn_sync_latest_log();
 
 -- ╔══════════════════════════════════════════════════════════════╗
+-- ║  Latest log links                                            ║
+-- ║  Adds a latest_log_id column to series_metadata and          ║
+-- ║  movie_metadata                                              ║
+-- ╠══════════════════════════════════════════════════════════════╣
+-- ║  STORES        the log_id of the newest log for that series  ║
+-- ║                or movie                                      ║
+-- ║  RULES         If that log is deleted, the link is cleared.  ║
+-- ║                The series or movie stays.                    ║
+-- ║  NOTE          Added with ALTER because the log tables are   ║
+-- ║                created after the catalogue tables.           ║
+-- ╚══════════════════════════════════════════════════════════════╝
+-- Movie Metadata
+ALTER TABLE registry.movie_metadata
+ADD COLUMN latest_log_id INTEGER REFERENCES watchlogs.movie_log(log_id) ON DELETE SET NULL;
+
+-- Series Metadata
+ALTER TABLE registry.series_metadata
+ADD COLUMN latest_log_id INTEGER REFERENCES watchlogs.series_log(log_id) ON DELETE SET NULL;
+
+-- ╔══════════════════════════════════════════════════════════════╗
 -- ║  Latest log backfill                                         ║
 -- ║  One-time recalculation of latest_log_id for all movies and  ║
 -- ║  series                                                      ║
@@ -235,7 +255,8 @@ WHERE sm.series_id = sub.series_id;
 -- ║                time). End date cannot be before start date.  ║
 -- ║                A season number cannot be above the series'   ║
 -- ║                total seasons.                                ║
--- ║  REWATCH       Set automatically. Movie: another Finished or ║
+-- ║  REWATCH       Set automatically. Movie: watched_pre_log is  ║
+-- ║                set on the movie, or another Finished or      ║
 -- ║                Ongoing log exists. Series: the season is     ║
 -- ║                within seasons_pre_log, or another Finished   ║
 -- ║                or Ongoing log of that season exists.         ║
@@ -257,11 +278,11 @@ WHERE sm.series_id = sub.series_id;
 -- ║                minus start plus 1) and refreshes             ║
 -- ║                last_updated on updates.                      ║
 -- ║  TRIGGERS      trg_process_series_log, trg_process_movie_log ║
--- ║  NOTE          A rewatch flag you set to TRUE stays TRUE.    ║
+-- ║  NOTE          A rewatch flag I set to TRUE stays TRUE.      ║
 -- ║                Seasons up to seasons_pre_log count as        ║
 -- ║                rewatches even on their first logged watch,   ║
--- ║                so the rating views show them as Original     ║
--- ║                (Not Logged).                                 ║
+-- ║                so the rating views show them as (Not Logged).║ 
+-- ║				The same goes for a movie with watched_pre_log║
 -- ╚══════════════════════════════════════════════════════════════╝
 CREATE OR REPLACE FUNCTION watchlogs.fn_process_log_entry()
 RETURNS trigger AS $$
@@ -269,6 +290,7 @@ DECLARE
     v_today DATE := (now() AT TIME ZONE 'Africa/Lagos')::DATE; 
     v_max_seasons INT;
     v_pre_log INT;
+    v_movie_pre_log BOOLEAN := FALSE;
 BEGIN
     -- Block future dates
     IF NEW.start_date > v_today THEN
@@ -283,6 +305,9 @@ BEGIN
         IF NEW.season_no > v_max_seasons THEN
             RAISE EXCEPTION 'Season % does not exist. Limit is %.', NEW.season_no, v_max_seasons;
         END IF;
+    ELSIF TG_TABLE_NAME = 'movie_log' THEN
+        SELECT watched_pre_log INTO v_movie_pre_log
+        FROM registry.movie_metadata WHERE movie_id = NEW.movie_id;
     END IF;
 
    -- Automatic Rewatch Detection
@@ -293,7 +318,7 @@ BEGIN
 		        -- Only auto-detect if is_rewatch is not already TRUE
 		        IF (COALESCE(NEW.is_rewatch, FALSE) = FALSE) THEN
 		            IF TG_TABLE_NAME = 'movie_log' THEN
-		                IF EXISTS (
+		                IF COALESCE(v_movie_pre_log, FALSE) OR EXISTS (
 		                    SELECT 1 
 		                    FROM watchlogs.movie_log 
 		                    WHERE movie_id = NEW.movie_id 
