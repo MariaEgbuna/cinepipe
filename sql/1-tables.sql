@@ -54,7 +54,11 @@ CREATE TABLE public.dates_table (
 -- ║                tidies title, genres and platform. Log status ║
 -- ║                and latest_log_id are kept up to date         ║
 -- ║                automatically.                                ║
+-- ║  NOTE          poster_path is the end of the TMDB image      ║
+-- ║                address, like /abc123.jpg. The picture itself ║
+-- ║                is never stored.                              ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE TABLE registry.series_metadata (
     series_id SERIAL PRIMARY KEY, 
     series_code VARCHAR(20) UNIQUE NOT NULL,
@@ -71,6 +75,7 @@ CREATE TABLE registry.series_metadata (
     seasons_pre_log SMALLINT NOT NULL DEFAULT 0 CONSTRAINT seasons_pre_log_check CHECK (seasons_pre_log >= 0),
     log_status  VARCHAR(20) NOT NULL DEFAULT 'Backlog' CHECK (log_status IN ('Backlog', 'Logged')),
     tmdb_id INTEGER UNIQUE NOT NULL,
+    poster_path TEXT CONSTRAINT series_poster_path_check CHECK (poster_path IS NULL OR poster_path ~ '^/[A-Za-z0-9_.-]+$'),    
     last_updated TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -95,7 +100,11 @@ CREATE TABLE registry.series_metadata (
 -- ║                to decide the rewatch flag. Log status and    ║
 -- ║                latest_log_id are kept up to date             ║
 -- ║                automatically.                                ║
+-- ║  NOTE          poster_path is the end of the TMDB image      ║
+-- ║                address, like /abc123.jpg. The picture itself ║
+-- ║                is never stored.                              ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE TABLE registry.movie_metadata ( 
     movie_id SERIAL PRIMARY KEY,
     movie_code VARCHAR(20) UNIQUE NOT NULL,
@@ -108,6 +117,7 @@ CREATE TABLE registry.movie_metadata (
     tmdb_id INTEGER UNIQUE NOT NULL,
     log_status VARCHAR(20) NOT NULL DEFAULT 'Backlog' CHECK (log_status IN ('Backlog', 'Logged')),
     watched_pre_log BOOLEAN NOT NULL DEFAULT FALSE,
+    poster_path TEXT CONSTRAINT movie_poster_path_check CHECK (poster_path IS NULL OR poster_path ~ '^/[A-Za-z0-9_.-]+$'),
     last_updated TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -133,6 +143,7 @@ CREATE TABLE registry.movie_metadata (
 -- ║                the season is Finished. Deleted rows are      ║
 -- ║                copied to the recycle bin.                    ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE TABLE watchlogs.series_log (
     log_id SERIAL PRIMARY KEY,
     series_id INTEGER NOT NULL REFERENCES registry.series_metadata(series_id) ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -176,6 +187,7 @@ CREATE TABLE watchlogs.series_log (
 -- ║                unless the movie is Finished. Deleted rows    ║
 -- ║                are copied to the recycle bin.                ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE TABLE watchlogs.movie_log (
     log_id SERIAL PRIMARY KEY,
     movie_id INTEGER NOT NULL REFERENCES registry.movie_metadata(movie_id) ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -205,6 +217,7 @@ CREATE TABLE watchlogs.movie_log (
 -- ║  NOTE          The Recovery tools in v_admin_toolbox read    ║
 -- ║                from here.                                    ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE TABLE archive.metadata_audit (
     audit_id      BIGSERIAL PRIMARY KEY,
     entity_id     INTEGER NOT NULL,
@@ -225,6 +238,7 @@ CREATE TABLE archive.metadata_audit (
 -- ║  NOTE          The Recovery tools in v_admin_toolbox read    ║
 -- ║                from here.                                    ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE TABLE archive.log_audit (
     audit_id      BIGSERIAL PRIMARY KEY,
     log_id        INTEGER NOT NULL,
@@ -303,4 +317,3 @@ SELECT setval(pg_get_serial_sequence('registry.series_metadata', 'series_id'), (
 -- For Log Tables
 SELECT setval(pg_get_serial_sequence('watchlogs.series_log', 'log_id'), (SELECT MAX(log_id) FROM watchlogs.series_log));
 SELECT setval(pg_get_serial_sequence('watchlogs.movie_log', 'log_id'), (SELECT MAX(log_id) FROM watchlogs.movie_log));
-
