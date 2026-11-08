@@ -24,6 +24,7 @@
 -- ║                fn_process_metadata. A movie with the flag    ║
 -- ║                set has its first log marked as a rewatch.    ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE OR REPLACE PROCEDURE registry.add_metadata(
     p_type           TEXT, 
     p_title          TEXT, 
@@ -91,6 +92,81 @@ END;
 $procedure$;
 
 -- ╔══════════════════════════════════════════════════════════════╗
+-- ║  registry.set_poster                                         ║
+-- ║  Saves or clears the poster of a movie or series             ║
+-- ╠══════════════════════════════════════════════════════════════╣
+-- ║  TAKES         type (Movie or Series), tmdb_id and the       ║
+-- ║                poster path, like /abc123.jpg. A blank path   ║
+-- ║                clears the poster.                            ║
+-- ║  HOW IT WORKS  Finds the movie or series by tmdb_id. If its  ║
+-- ║                poster is already the same, it prints a       ║
+-- ║                notice and does nothing. If not, it saves the ║
+-- ║                new path.                                     ║
+-- ║  STOPS WHEN    tmdb_id is missing, the type is not Movie or  ║
+-- ║                Series, the path does not start with a slash, ║
+-- ║                or no title has that tmdb_id                  ║
+-- ║  NOTE          Only the end of the TMDB image address is     ║
+-- ║                stored, never the picture. The trigger        ║
+-- ║                fn_process_metadata refreshes last_updated,   ║
+-- ║                so the sync picks the change up.              ║
+-- ╚══════════════════════════════════════════════════════════════╝
+ 
+CREATE OR REPLACE PROCEDURE registry.set_poster(
+    p_type        TEXT,
+    p_tmdb_id     INTEGER,
+    p_poster_path TEXT
+)
+LANGUAGE plpgsql
+AS $procedure$
+DECLARE
+    v_type  TEXT := UPPER(p_type);
+    v_path  TEXT := NULLIF(TRIM(p_poster_path), '');
+    v_title TEXT;
+    v_old   TEXT;
+BEGIN
+    IF p_tmdb_id IS NULL THEN
+        RAISE EXCEPTION 'Poster not saved: tmdb_id is required and cannot be NULL.';
+    END IF;
+ 
+    IF v_path IS NOT NULL AND v_path !~ '^/[A-Za-z0-9_.-]+$' THEN
+        RAISE EXCEPTION 'Poster not saved: "%" is not a valid poster path. It should look like /abc123.jpg.', v_path;
+    END IF;
+ 
+    IF v_type = 'MOVIE' THEN
+        SELECT title, poster_path INTO v_title, v_old
+        FROM registry.movie_metadata WHERE tmdb_id = p_tmdb_id;
+    ELSIF v_type = 'SERIES' THEN
+        SELECT title, poster_path INTO v_title, v_old
+        FROM registry.series_metadata WHERE tmdb_id = p_tmdb_id;
+    ELSE
+        RAISE EXCEPTION 'Invalid media type: %. Use "MOVIE" or "SERIES".', v_type;
+    END IF;
+ 
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Poster not saved: no % with tmdb_id % in the library.', v_type, p_tmdb_id;
+    END IF;
+ 
+    -- Nothing to change, so last_updated is left alone and the sync skips this row
+    IF v_old IS NOT DISTINCT FROM v_path THEN
+        RAISE NOTICE 'Poster for % is already up to date.', v_title;
+        RETURN;
+    END IF;
+ 
+    IF v_type = 'MOVIE' THEN
+        UPDATE registry.movie_metadata SET poster_path = v_path WHERE tmdb_id = p_tmdb_id;
+    ELSE
+        UPDATE registry.series_metadata SET poster_path = v_path WHERE tmdb_id = p_tmdb_id;
+    END IF;
+ 
+    IF v_path IS NULL THEN
+        RAISE NOTICE 'Poster for % cleared.', v_title;
+    ELSE
+        RAISE NOTICE 'Poster for % saved.', v_title;
+    END IF;
+END;
+$procedure$;
+
+-- ╔══════════════════════════════════════════════════════════════╗
 -- ║  watchlogs.series_watch                                      ║
 -- ║  Updates an existing season log, or starts a new one         ║
 -- ╠══════════════════════════════════════════════════════════════╣
@@ -115,6 +191,7 @@ $procedure$;
 -- ║                (a season only becomes Finished when all      ║
 -- ║                episodes are watched).                        ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE OR REPLACE PROCEDURE watchlogs.series_watch(
     p_series_code      TEXT, 
     p_season_no        INTEGER, 
@@ -206,6 +283,7 @@ $procedure$;
 -- ║                fn_process_log_entry decides the final        ║
 -- ║                status, dates and whether the rating is kept. ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE OR REPLACE PROCEDURE watchlogs.movie_watch(
     p_movie_code        TEXT, 
     p_rating            NUMERIC DEFAULT NULL, 
@@ -286,6 +364,7 @@ $procedure$;
 -- ║                because logs can only use dates that exist in ║
 -- ║                the calendar.                                 ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE OR REPLACE PROCEDURE public.extend_calendar(target_year INT)
 LANGUAGE plpgsql
 AS $$
@@ -347,6 +426,7 @@ $$;
 -- ║  NOTE          An audit trigger saves a copy of the deleted  ║
 -- ║                row to the recycle bin automatically.         ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE OR REPLACE PROCEDURE registry.remove_metadata(
     p_type TEXT,
     p_code TEXT
@@ -425,6 +505,7 @@ $procedure$;
 -- ║                fn_sync_latest_log and fn_sync_media_status   ║
 -- ║                run automatically.                            ║
 -- ╚══════════════════════════════════════════════════════════════╝
+
 CREATE OR REPLACE PROCEDURE watchlogs.remove_log(
     p_type   TEXT,
     p_log_id INTEGER
