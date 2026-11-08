@@ -102,11 +102,13 @@ def add_media():
     # --- STEP 5: MAPPING DATA ---
     official_title = d.get('title' if media_type == 'Movie' else 'name')
     genres_list = [g.get('name') for g in d.get('genres', [])]
+    p_poster_path = d.get('poster_path')  # like /abc123.jpg, or None if TMDB has no poster
 
     # Initialize all parameters to prevent NameErrors
     p_year, p_country, p_extra_info, p_runtime = None, 'US', 'Unknown', 0
     p_status = 'Backlog' if media_type == 'Movie' else 'Returning'
     p_completed, p_seasons, p_episodes, p_pre_log = None, None, None, 0
+    p_watched_pre_log = False  # movies only
 
     if media_type == 'Movie':
         p_year = int(d.get('release_date', '0000')[:4])
@@ -114,6 +116,9 @@ def add_media():
         p_runtime = d.get('runtime', 0)
         crew = d.get('credits', {}).get('crew', [])
         p_extra_info = next((m.get('name') for m in crew if m.get('job') == 'Director'), "Unknown")
+
+        watched_input = input("Confirm you've seen this movie BEFORE you save it [y/N]: ").strip().lower()
+        p_watched_pre_log = watched_input == 'y'
 
     else:
         p_year = int(d.get('first_air_date', '0000')[:4])
@@ -158,6 +163,8 @@ def add_media():
     else:
         print(f" Dir: {p_extra_info[:25]} | {p_country} | {p_runtime}m")
         print(f" Gen: {', '.join(genres_list[:4])}")
+        print(f" Watched before logging: {'Yes' if p_watched_pre_log else 'No'}")
+    print(f" Poster: {p_poster_path if p_poster_path else 'none on TMDB'}")
 
     confirm = input(f" COMMIT {media_type} to Database? [y/N]: ").strip().lower()
     if confirm != 'y':
@@ -170,13 +177,17 @@ def add_media():
         cur = conn.cursor()
         cur.execute(f"""
             CALL registry.add_metadata(
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
         """, (
             media_type, official_title, p_year, p_country, p_extra_info,
             p_runtime, genres_list, tmdb_id, p_status,
-            p_completed, p_seasons, p_episodes, p_pre_log
+            p_completed, p_seasons, p_episodes, p_pre_log, p_watched_pre_log
         ))
+
+        # Save the poster in the same transaction, so a title is never half saved
+        if p_poster_path:
+            cur.execute("CALL registry.set_poster(%s, %s, %s)", (media_type, tmdb_id, p_poster_path))
 
         conn.commit()
         print(f" SUCCESS: {official_title} REGISTERED.")
